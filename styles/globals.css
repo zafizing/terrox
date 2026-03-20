@@ -1,17 +1,17 @@
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&family=Inter:wght@300;400;500;600&display=swap');
 
 :root {
-  --bg-primary: #0a1628;
-  --bg-secondary: #0c1a30;
-  --bg-card: #0f2040;
-  --bg-elevated: #132548;
-  --border: #1a2e4a;
-  --border-bright: #1e3a5f;
+  --bg-primary: #071428;
+  --bg-secondary: #091830;
+  --bg-card: #0c2040;
+  --bg-elevated: #102548;
+  --border: #0e2a48;
+  --border-bright: #1a3a5a;
   --accent: #e8440a;
   --accent-glow: rgba(232, 68, 10, 0.25);
-  --text-primary: #d8e4f0;
-  --text-secondary: #6a8aaa;
-  --text-muted: #2d4a66;
+  --text-primary: #d0e4f0;
+  --text-secondary: #5a8aaa;
+  --text-muted: #1e3a5a;
   --font-display: 'Bebas Neue', sans-serif;
   --font-mono: 'Space Mono', monospace;
   --font-body: 'Inter', sans-serif;
@@ -29,18 +29,37 @@ html, body {
 }
 
 a { color: inherit; text-decoration: none; }
-
 ::-webkit-scrollbar { width: 3px; }
 ::-webkit-scrollbar-track { background: var(--bg-primary); }
 ::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 2px; }
 
-/* CartoDB dark tiles - shift to ocean blue, brighten */
+/*
+  THE MAP FILTER STRATEGY:
+  CartoDB dark_nolabels has:
+    - Ocean = very dark gray (#1a1a2e range)
+    - Land = slightly lighter dark gray
+    - Country borders = dim white lines
+  
+  We apply a CSS filter to:
+    1. hue-rotate → shifts grays toward blue (ocean becomes blue)
+    2. saturate → intensifies the blue shift  
+    3. brightness → makes everything visible
+    4. contrast → separates ocean from land more clearly
+  
+  Result: Ocean = dark navy blue, Land = darker charcoal/slate
+  Country borders remain as thin light lines
+*/
 .leaflet-tile-pane {
-  filter: hue-rotate(200deg) saturate(2) brightness(1.8) contrast(1.1);
+  filter: hue-rotate(195deg) saturate(3) brightness(1.5) contrast(1.4);
 }
 
 .leaflet-container {
-  background: #0a1f3d !important;
+  background: #071428 !important;
+}
+
+/* Remove all labels if any leak through */
+.leaflet-overlay-pane svg {
+  pointer-events: none;
 }
 
 .leaflet-control-zoom {
@@ -72,7 +91,7 @@ a { color: inherit; text-decoration: none; }
   border-radius: 2px !important;
   color: var(--text-primary) !important;
   font-family: var(--font-body) !important;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.6) !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.8) !important;
 }
 
 .leaflet-popup-tip { background: var(--bg-card) !important; }
