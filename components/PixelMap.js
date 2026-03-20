@@ -1,37 +1,44 @@
 import { useEffect, useRef, useState } from 'react'
 import { GRID_COLS, GRID_ROWS, WORLD_BOUNDS, gridToLatLng, idToGrid, PIXEL_WIDTH, PIXEL_HEIGHT } from '../lib/pixels'
 
-// Rough land bounding boxes to prevent ocean pixel purchases
-// These are simplified polygons for major land masses
+// Simplified land detection — blocks obvious ocean areas
 function isLand(lat, lng) {
-  // Exclude clear ocean areas
+  // Arctic/Antarctic
+  if (lat > 84 || lat < -80) return false
+
+  // Pacific Ocean (main body)
+  if (lng < -130 && lat > -55 && lat < 55) return false
+  if (lng > 150 && lat > -50 && lat < 55 && !(lat > -50 && lng > 160 && lat < -30)) return false
+
   // North Atlantic
-  if (lat > 20 && lat < 65 && lng > -60 && lng < -10) return false
+  if (lng > -55 && lng < -10 && lat > 25 && lat < 65) return false
+
   // South Atlantic
-  if (lat > -55 && lat < 5 && lng > -40 && lng < 10) return false
-  // Central Pacific
-  if (lat > -50 && lat < 60 && lng > 160 && lng < 180) return false
-  if (lat > -50 && lat < 60 && lng > -180 && lng < -100) return false
-  // Indian Ocean
-  if (lat > -50 && lat < 5 && lng > 55 && lng < 95) return false
-  // Arctic Ocean
-  if (lat > 80) return false
-  // Antarctic Ocean
-  if (lat < -78) return false
-  // North Pacific
-  if (lat > 20 && lat < 60 && lng > -180 && lng < -130) return false
-  if (lat > 20 && lat < 60 && lng > 155 && lng < 180) return false
-  // Mediterranean (allow - has islands)
-  // Caribbean rough
-  if (lat > 10 && lat < 25 && lng > -85 && lng < -60) return false
+  if (lng > -38 && lng < 15 && lat > -55 && lat < 0) return false
+
+  // Indian Ocean (main)
+  if (lng > 55 && lng < 100 && lat > -55 && lat < 0) return false
+
+  // Arabian Sea
+  if (lng > 55 && lng < 68 && lat > 10 && lat < 25) return false
+
+  // Bay of Bengal  
+  if (lng > 82 && lng < 100 && lat > 5 && lat < 22) return false
 
   return true
 }
+
+// Color palette for war game feel
+const TERRITORY_COLORS = [
+  '#e8440a', '#0066ff', '#00aa44', '#cc00aa',
+  '#ffaa00', '#00ccff', '#ff4466', '#44ff88',
+]
 
 export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
   const mapRef = useRef(null)
   const canvasLayerRef = useRef(null)
   const [mapReady, setMapReady] = useState(false)
+  const [tooltip, setTooltip] = useState(null)
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -44,13 +51,13 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
         center: [25, 15],
         zoom: 2,
         minZoom: 2,
-        maxZoom: 6,
+        maxZoom: 7,
         zoomControl: true,
         attributionControl: false,
       })
 
-      // Ocean layer - deep blue styled
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+      // Stamen Toner - COUNTRY BORDERS ONLY, no provinces, no roads, no labels
+      L.tileLayer('https://tiles.stadiamaps.com/tiles/stamen_toner_background/{z}/{x}/{y}{r}.png', {
         subdomains: 'abcd',
         opacity: 1,
       }).addTo(map)
@@ -85,9 +92,7 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
           const bounds = map.getBounds()
           const zoom = map.getZoom()
 
-          // Draw pixel grid only on land cells
-          ctx.lineWidth = 0.5
-
+          // Draw pixel grid on land only
           for (let row = 0; row < GRID_ROWS; row++) {
             for (let col = 0; col < GRID_COLS; col++) {
               const { lat, lng } = gridToLatLng(col, row)
@@ -99,17 +104,14 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
               const w = Math.max(1, br.x - tl.x)
               const h = Math.max(1, br.y - tl.y)
 
-              // Subtle land tint
-              if (zoom >= 3) {
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.015)'
-                ctx.fillRect(tl.x, tl.y, w, h)
-                ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)'
-                ctx.strokeRect(tl.x, tl.y, w, h)
-              }
+              // Visible grid on land
+              ctx.strokeStyle = 'rgba(100, 160, 255, 0.18)'
+              ctx.lineWidth = 0.5
+              ctx.strokeRect(tl.x, tl.y, w, h)
             }
           }
 
-          // Draw owned pixels
+          // Draw owned pixels with glow
           pixels.forEach((pixel, id) => {
             if (!pixel.owner_wallet) return
             const { col, row } = idToGrid(id)
@@ -122,18 +124,24 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
             const w = Math.max(1, br.x - tl.x)
             const h = Math.max(1, br.y - tl.y)
 
-            // Glow effect
-            ctx.shadowColor = pixel.color || '#e8440a'
-            ctx.shadowBlur = 6
-            ctx.fillStyle = pixel.color || 'rgba(232, 68, 10, 0.8)'
+            const color = pixel.color || '#e8440a'
+
+            // Glow
+            ctx.shadowColor = color
+            ctx.shadowBlur = zoom >= 4 ? 8 : 4
+            ctx.fillStyle = color
+            ctx.globalAlpha = 0.85
             ctx.fillRect(tl.x, tl.y, w, h)
+            ctx.globalAlpha = 1
             ctx.shadowBlur = 0
-            ctx.strokeStyle = 'rgba(255,255,255,0.2)'
+
+            // Border
+            ctx.strokeStyle = 'rgba(255,255,255,0.25)'
             ctx.lineWidth = 0.5
             ctx.strokeRect(tl.x, tl.y, w, h)
           })
 
-          // Highlighted pixel
+          // Highlighted pixel - pulsing border
           if (highlightedPixelId !== null && highlightedPixelId !== undefined) {
             const { col, row } = idToGrid(highlightedPixelId)
             const { lat, lng } = gridToLatLng(col, row)
@@ -141,9 +149,10 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
             const br = map.latLngToContainerPoint([lat - PIXEL_HEIGHT / 2, lng + PIXEL_WIDTH / 2])
             const w = Math.max(2, br.x - tl.x)
             const h = Math.max(2, br.y - tl.y)
+
             ctx.shadowColor = '#e8440a'
-            ctx.shadowBlur = 12
-            ctx.strokeStyle = '#e8440a'
+            ctx.shadowBlur = 16
+            ctx.strokeStyle = '#ffffff'
             ctx.lineWidth = 2
             ctx.strokeRect(tl.x, tl.y, w, h)
             ctx.shadowBlur = 0
@@ -156,10 +165,19 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
       canvasLayer.addTo(map)
       canvasLayerRef.current = canvasLayer
 
+      // Hover cursor change
+      map.on('mousemove', (e) => {
+        const { lat, lng } = e.latlng
+        if (isLand(lat, lng)) {
+          map.getContainer().style.cursor = 'crosshair'
+        } else {
+          map.getContainer().style.cursor = 'default'
+        }
+      })
+
+      // Click - land only
       map.on('click', (e) => {
         const { lat, lng } = e.latlng
-
-        // Block ocean clicks
         if (!isLand(lat, lng)) return
 
         const col = Math.floor((lng - WORLD_BOUNDS.minLng) / PIXEL_WIDTH)
@@ -184,6 +202,14 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
   }, [pixels, highlightedPixelId, mapReady])
 
   return (
-    <div id="terrox-map" style={{ width: '100%', height: '100%', background: '#0a1628' }} />
+    <div
+      id="terrox-map"
+      style={{
+        width: '100%',
+        height: '100%',
+        background: '#0a1f3d',
+        cursor: 'crosshair',
+      }}
+    />
   )
 }
