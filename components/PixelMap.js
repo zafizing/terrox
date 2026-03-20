@@ -86,8 +86,8 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
           if (zoom >= 3 && pxW > 2) {
             // Draw grid as repeating lines instead of per-pixel loop
             const originPt = map.latLngToContainerPoint([WORLD_BOUNDS.maxLat, WORLD_BOUNDS.minLng])
-            ctx.strokeStyle = 'rgba(80, 150, 220, 0.12)'
-            ctx.lineWidth = 0.4
+            ctx.strokeStyle = 'rgba(80, 160, 255, 0.35)'
+            ctx.lineWidth = 0.5
             // Vertical lines
             for (let col = 0; col <= GRID_COLS; col++) {
               const x = originPt.x + col * pxW
