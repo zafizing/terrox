@@ -9,7 +9,7 @@
   --border-bright: #1e3a5f;
   --accent: #e8440a;
   --accent-glow: rgba(232, 68, 10, 0.25);
-  --ocean: #091422;
+  --ocean: #0a1f3d;
   --text-primary: #d8e4f0;
   --text-secondary: #6a8aaa;
   --text-muted: #2d4a66;
@@ -35,37 +35,13 @@ a { color: inherit; text-decoration: none; }
 ::-webkit-scrollbar-track { background: var(--bg-primary); }
 ::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 2px; }
 
-/* Ocean wave map background */
-#terrox-map {
-  background: var(--ocean) !important;
-  background-image:
-    repeating-linear-gradient(
-      0deg,
-      transparent,
-      transparent 18px,
-      rgba(14, 42, 80, 0.3) 18px,
-      rgba(14, 42, 80, 0.3) 19px
-    ),
-    repeating-linear-gradient(
-      90deg,
-      transparent,
-      transparent 18px,
-      rgba(14, 42, 80, 0.2) 18px,
-      rgba(14, 42, 80, 0.2) 19px
-    ),
-    radial-gradient(ellipse at 20% 80%, rgba(10, 50, 120, 0.4) 0%, transparent 60%),
-    radial-gradient(ellipse at 80% 20%, rgba(5, 30, 80, 0.5) 0%, transparent 60%),
-    radial-gradient(ellipse at 50% 50%, rgba(8, 35, 90, 0.6) 0%, transparent 80%) !important;
-}
-
-/* Leaflet tile filter - deep blue ocean feel */
+/* Map tiles - bright blue ocean, visible land */
 .leaflet-tile-pane {
-  filter: hue-rotate(185deg) saturate(0.8) brightness(0.75) contrast(1.1);
+  filter: hue-rotate(190deg) saturate(1.4) brightness(1.6) contrast(1.2);
 }
 
 .leaflet-container {
-  background: #091422 !important;
-  font-family: var(--font-body) !important;
+  background: #0a1f3d !important;
 }
 
 .leaflet-control-zoom {
@@ -117,7 +93,7 @@ a { color: inherit; text-decoration: none; }
   100% { transform: translateX(400%); }
 }
 
-@keyframes waveShift {
-  0% { background-position: 0 0; }
-  100% { background-position: 40px 40px; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
