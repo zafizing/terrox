@@ -14,7 +14,7 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
       const L = (await import('leaflet')).default
 
       const map = L.map('terrox-map', {
-        center: [20, 0],
+        center: [20, 10],
         zoom: 2,
         minZoom: 2,
         maxZoom: 6,
@@ -22,15 +22,17 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
         attributionControl: false,
       })
 
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      // CartoDB Dark - no labels, clean borders only
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
         attribution: '',
-        opacity: 0.3,
+        opacity: 1.0,
+        subdomains: 'abcd',
       }).addTo(map)
 
       mapRef.current = map
 
       const CanvasLayer = L.Layer.extend({
-        onAdd: function(map) {
+        onAdd: function (map) {
           this._map = map
           this._canvas = document.createElement('canvas')
           this._canvas.style.position = 'absolute'
@@ -42,11 +44,11 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
           map.on('moveend zoomend resize', this._redraw, this)
           this._redraw()
         },
-        onRemove: function(map) {
+        onRemove: function (map) {
           map.getPanes().overlayPane.removeChild(this._canvas)
           map.off('moveend zoomend resize', this._redraw, this)
         },
-        _redraw: function() {
+        _redraw: function () {
           const map = this._map
           const canvas = this._canvas
           const size = map.getSize()
@@ -54,57 +56,55 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
           canvas.height = size.y
           const ctx = canvas.getContext('2d')
           ctx.clearRect(0, 0, size.x, size.y)
-
           const bounds = map.getBounds()
           const zoom = map.getZoom()
-          if (zoom < 2) return
 
+          // Subtle grid overlay when zoomed in
+          if (zoom >= 3) {
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)'
+            ctx.lineWidth = 0.5
+            for (let row = 0; row < GRID_ROWS; row++) {
+              for (let col = 0; col < GRID_COLS; col++) {
+                const { lat, lng } = gridToLatLng(col, row)
+                if (!bounds.contains([lat, lng])) continue
+                const tl = map.latLngToContainerPoint([lat + PIXEL_HEIGHT / 2, lng - PIXEL_WIDTH / 2])
+                const br = map.latLngToContainerPoint([lat - PIXEL_HEIGHT / 2, lng + PIXEL_WIDTH / 2])
+                ctx.strokeRect(tl.x, tl.y, Math.max(1, br.x - tl.x), Math.max(1, br.y - tl.y))
+              }
+            }
+          }
+
+          // Draw owned pixels
           pixels.forEach((pixel, id) => {
             if (!pixel.owner_wallet) return
             const { col, row } = idToGrid(id)
             const { lat, lng } = gridToLatLng(col, row)
             if (!bounds.contains([lat, lng])) return
-
-            const topLeft = map.latLngToContainerPoint([lat + PIXEL_HEIGHT / 2, lng - PIXEL_WIDTH / 2])
-            const bottomRight = map.latLngToContainerPoint([lat - PIXEL_HEIGHT / 2, lng + PIXEL_WIDTH / 2])
-            const w = Math.max(1, bottomRight.x - topLeft.x)
-            const h = Math.max(1, bottomRight.y - topLeft.y)
-
-            if (pixel.is_special && pixel.special_type === 'legendary') {
-              ctx.fillStyle = 'rgba(255, 215, 0, 0.7)'
-              ctx.shadowColor = '#ffd700'
-              ctx.shadowBlur = 8
-            } else if (pixel.is_special && pixel.special_type === 'strategic') {
-              ctx.fillStyle = 'rgba(0, 212, 255, 0.6)'
-              ctx.shadowColor = '#00d4ff'
-              ctx.shadowBlur = 6
-            } else {
-              ctx.fillStyle = pixel.color || 'rgba(255, 77, 0, 0.5)'
-              ctx.shadowBlur = 0
-            }
-
-            ctx.fillRect(topLeft.x, topLeft.y, w, h)
-            ctx.shadowBlur = 0
-            ctx.strokeStyle = 'rgba(255,255,255,0.1)'
+            const tl = map.latLngToContainerPoint([lat + PIXEL_HEIGHT / 2, lng - PIXEL_WIDTH / 2])
+            const br = map.latLngToContainerPoint([lat - PIXEL_HEIGHT / 2, lng + PIXEL_WIDTH / 2])
+            const w = Math.max(1, br.x - tl.x)
+            const h = Math.max(1, br.y - tl.y)
+            ctx.fillStyle = pixel.color || 'rgba(255, 77, 0, 0.65)'
+            ctx.fillRect(tl.x, tl.y, w, h)
+            ctx.strokeStyle = 'rgba(255,255,255,0.12)'
             ctx.lineWidth = 0.5
-            ctx.strokeRect(topLeft.x, topLeft.y, w, h)
+            ctx.strokeRect(tl.x, tl.y, w, h)
           })
 
+          // Highlighted pixel
           if (highlightedPixelId !== null && highlightedPixelId !== undefined) {
             const { col, row } = idToGrid(highlightedPixelId)
             const { lat, lng } = gridToLatLng(col, row)
-            const topLeft = map.latLngToContainerPoint([lat + PIXEL_HEIGHT / 2, lng - PIXEL_WIDTH / 2])
-            const bottomRight = map.latLngToContainerPoint([lat - PIXEL_HEIGHT / 2, lng + PIXEL_WIDTH / 2])
-            const w = Math.max(2, bottomRight.x - topLeft.x)
-            const h = Math.max(2, bottomRight.y - topLeft.y)
+            const tl = map.latLngToContainerPoint([lat + PIXEL_HEIGHT / 2, lng - PIXEL_WIDTH / 2])
+            const br = map.latLngToContainerPoint([lat - PIXEL_HEIGHT / 2, lng + PIXEL_WIDTH / 2])
+            const w = Math.max(2, br.x - tl.x)
+            const h = Math.max(2, br.y - tl.y)
             ctx.strokeStyle = '#ff4d00'
             ctx.lineWidth = 2
-            ctx.strokeRect(topLeft.x, topLeft.y, w, h)
+            ctx.strokeRect(tl.x, tl.y, w, h)
           }
         },
-        update: function() {
-          this._redraw()
-        }
+        update: function () { this._redraw() }
       })
 
       const canvasLayer = new CanvasLayer()
@@ -134,9 +134,6 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
   }, [pixels, highlightedPixelId, mapReady])
 
   return (
-    <div
-      id="terrox-map"
-      style={{ width: '100%', height: '100%', background: '#080a0e' }}
-    />
+    <div id="terrox-map" style={{ width: '100%', height: '100%', background: '#0a0d12' }} />
   )
 }
