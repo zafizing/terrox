@@ -9,7 +9,6 @@
   --border-bright: #1e3a5f;
   --accent: #e8440a;
   --accent-glow: rgba(232, 68, 10, 0.25);
-  --ocean: #0a1f3d;
   --text-primary: #d8e4f0;
   --text-secondary: #6a8aaa;
   --text-muted: #2d4a66;
@@ -35,9 +34,9 @@ a { color: inherit; text-decoration: none; }
 ::-webkit-scrollbar-track { background: var(--bg-primary); }
 ::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 2px; }
 
-/* Map tiles - bright blue ocean, visible land */
+/* CartoDB dark tiles - shift to ocean blue, brighten */
 .leaflet-tile-pane {
-  filter: hue-rotate(190deg) saturate(1.4) brightness(1.6) contrast(1.2);
+  filter: hue-rotate(200deg) saturate(2) brightness(1.8) contrast(1.1);
 }
 
 .leaflet-container {
@@ -78,11 +77,6 @@ a { color: inherit; text-decoration: none; }
 
 .leaflet-popup-tip { background: var(--bg-card) !important; }
 
-@keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
 @keyframes blink {
   0%, 100% { opacity: 0.4; }
   50% { opacity: 0.9; }
@@ -91,9 +85,4 @@ a { color: inherit; text-decoration: none; }
 @keyframes loadingSlide {
   0% { transform: translateX(-100%); }
   100% { transform: translateX(400%); }
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
 }
