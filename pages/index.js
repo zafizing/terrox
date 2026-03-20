@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import Head from 'next/head'
 import dynamic from 'next/dynamic'
 import { calculateNextPrice, BASE_PIXEL_PRICE_SOL } from '../lib/solana'
-import { gridToLatLng, idToGrid } from '../lib/pixels'
 import PixelModal from '../components/PixelModal'
 import LiveFeed from '../components/LiveFeed'
 import Leaderboard from '../components/Leaderboard'
@@ -41,7 +40,7 @@ export default function Home() {
       const data = await res.json()
       setLeaderboard(data.leaderboard || [])
       setStats(data.stats || { totalPixelsSold: 0, totalVolume: 0 })
-      const feed = (data.feed || []).map(f => ({ ...f, timestamp: new Date(f.timestamp), action: 'claimed' }))
+      const feed = (data.feed || []).map(f => ({ ...f, timestamp: new Date(f.timestamp) }))
       setFeedItems(feed)
     } catch (e) {
       console.error('Failed to fetch leaderboard', e)
@@ -74,8 +73,8 @@ export default function Home() {
         territory_name: existing?.territory_name || null,
         current_price_sol: calculateNextPrice(existing?.current_price_sol || BASE_PIXEL_PRICE_SOL),
         original_price_sol: BASE_PIXEL_PRICE_SOL,
-        is_special: existing?.is_special || false,
-        special_type: existing?.special_type || null,
+        is_special: false,
+        special_type: null,
         purchase_count: (existing?.purchase_count || 0) + 1,
         color,
         updated_at: new Date().toISOString(),
@@ -87,10 +86,7 @@ export default function Home() {
       id: txSig,
       pixelId,
       ownerName: name,
-      action: 'claimed',
       timestamp: new Date(),
-      isSpecial: pixels.get(pixelId)?.is_special,
-      specialType: pixels.get(pixelId)?.special_type,
     }, ...prev.slice(0, 14)])
 
     setTimeout(fetchLeaderboard, 2000)
@@ -101,63 +97,70 @@ export default function Home() {
 
   return (
     <>
-      <Head><title>TERROX — Own The World</title></Head>
+      <Head>
+        <title>TERROX — Own The World</title>
+        <meta name="description" content="Buy pixels on a real world map. Prices rise with every sale." />
+      </Head>
+
       <div className={styles.app}>
         <header className={styles.header}>
           <div className={styles.logo}>
             <span className={styles.logoText}>TERROX</span>
-            <span className={styles.logoSub}>OWN THE WORLD</span>
+            <span className={styles.logoSub}>Own The World</span>
           </div>
+
           <div className={styles.statsBar}>
             <div className={styles.stat}>
               <span className={styles.statValue}>{stats.totalPixelsSold.toLocaleString()}</span>
-              <span className={styles.statLabel}>CLAIMED</span>
+              <span className={styles.statLabel}>Claimed</span>
             </div>
-            <div className={styles.statDivider} />
             <div className={styles.stat}>
               <span className={styles.statValue}>{pixelsRemaining.toLocaleString()}</span>
-              <span className={styles.statLabel}>REMAINING</span>
+              <span className={styles.statLabel}>Remaining</span>
             </div>
-            <div className={styles.statDivider} />
             <div className={styles.stat}>
               <span className={styles.statValue}>{stats.totalVolume.toFixed(2)}</span>
-              <span className={styles.statLabel}>SOL TRADED</span>
+              <span className={styles.statLabel}>SOL Traded</span>
             </div>
           </div>
+
           <div className={styles.headerActions}>
-            <button className={styles.menuBtn} onClick={() => setSidebarOpen(!sidebarOpen)}>☰ STATS</button>
+            <button className={styles.menuBtn} onClick={() => setSidebarOpen(!sidebarOpen)}>
+              ☰ Menu
+            </button>
           </div>
         </header>
 
         <div className={styles.progressBar}>
           <div className={styles.progressFill} style={{ width: `${percentSold}%` }} />
-          <span className={styles.progressLabel}>{percentSold}% OF WORLD CLAIMED</span>
+          <span className={styles.progressLabel}>{percentSold}% claimed</span>
         </div>
 
         <div className={styles.main}>
           <aside className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ''}`}>
             <div className={styles.sidebarContent}>
               <div className={styles.howTo}>
-                <div className={styles.sectionTitle}>⚔ HOW TO CONQUER</div>
+                <div className={styles.sectionTitle}>How to claim</div>
                 <div className={styles.steps}>
-                  <div className={styles.step}><span className={styles.stepNum}>1</span><span>Click any pixel on the map</span></div>
-                  <div className={styles.step}><span className={styles.stepNum}>2</span><span>Send SOL to the displayed address</span></div>
-                  <div className={styles.step}><span className={styles.stepNum}>3</span><span>Paste your tx signature to claim</span></div>
-                  <div className={styles.step}><span className={styles.stepNum}>4</span><span>Your mark appears on the world map</span></div>
+                  <div className={styles.step}>
+                    <span className={styles.stepNum}>1</span>
+                    <span>Click any pixel on the map</span>
+                  </div>
+                  <div className={styles.step}>
+                    <span className={styles.stepNum}>2</span>
+                    <span>Send SOL to the address shown</span>
+                  </div>
+                  <div className={styles.step}>
+                    <span className={styles.stepNum}>3</span>
+                    <span>Paste your transaction signature</span>
+                  </div>
+                  <div className={styles.step}>
+                    <span className={styles.stepNum}>4</span>
+                    <span>Your territory appears on the map</span>
+                  </div>
                 </div>
-                <div className={styles.note}>When someone buys your pixel, you automatically profit. Every resale price climbs 10%.</div>
-              </div>
-              <div className={styles.specialInfo}>
-                <div className={styles.sectionTitle}>◆ SPECIAL PIXELS</div>
-                <div className={styles.specialTypes}>
-                  <div className={styles.specialType}>
-                    <span className={styles.legendaryDot}>⚡</span>
-                    <div><div className={styles.specialName}>LEGENDARY</div><div className={styles.specialDesc}>Famous landmarks. Highest visibility.</div></div>
-                  </div>
-                  <div className={styles.specialType}>
-                    <span className={styles.strategicDot}>◆</span>
-                    <div><div className={styles.specialName}>STRATEGIC</div><div className={styles.specialDesc}>World capitals. Prime territory.</div></div>
-                  </div>
+                <div className={styles.note}>
+                  When someone buys your pixel, you profit automatically. Price rises 10% each sale.
                 </div>
               </div>
               <Leaderboard entries={leaderboard} />
@@ -167,12 +170,18 @@ export default function Home() {
           <div className={styles.mapContainer}>
             {loading && (
               <div className={styles.loadingOverlay}>
-                <div className={styles.loadingText}>LOADING WORLD MAP...</div>
-                <div className={styles.loadingBar}><div className={styles.loadingFill} /></div>
+                <div className={styles.loadingText}>LOADING MAP</div>
+                <div className={styles.loadingBar}>
+                  <div className={styles.loadingFill} />
+                </div>
               </div>
             )}
-            <PixelMap pixels={pixels} onPixelClick={handlePixelClick} highlightedPixelId={selectedPixelId} />
-            <div className={styles.mapHint}>CLICK ANY PIXEL TO CLAIM TERRITORY</div>
+            <PixelMap
+              pixels={pixels}
+              onPixelClick={handlePixelClick}
+              highlightedPixelId={selectedPixelId}
+            />
+            <div className={styles.mapHint}>Click any pixel to claim territory</div>
           </div>
 
           <aside className={styles.rightPanel}>
