@@ -1,62 +1,54 @@
 import { useEffect, useRef, useState } from 'react'
 import { BASE_PIXEL_PRICE_SOL, calculateNextPrice } from '../lib/solana'
-import { idToGrid, gridToLatLng, GRID_COLS, GRID_ROWS } from '../lib/pixels'
+import { GRID_COLS, GRID_ROWS } from '../lib/pixels'
 
 const OCEAN_COLOR = '#060e1c'
-const OCEAN_GRID  = 'rgba(8, 28, 58, 0.8)'
-const GRID_COLOR  = 'rgba(60, 140, 255, 0.35)'
+const LAND_COLOR  = '#1a2d3f'
+const BORDER_COLOR = 'rgba(70, 130, 190, 0.6)'
+const GRID_COLOR  = 'rgba(60, 130, 220, 0.3)'
 const CLAIM_COLOR = '#e8440a'
 
 export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId }) {
-  const canvasRef   = useRef(null)
-  const baseRef     = useRef(null)   // pre-rendered land + borders
-  const worldRef    = useRef(null)   // parsed worldmap.json
-  const hitRef      = useRef(null)   // pixel → country index map (Uint16Array)
-  const view        = useRef({ zoom: 1, panX: 0, panY: 0 })
-  const drag        = useRef({ on: false, sx: 0, sy: 0, lx: 0, ly: 0, moved: false })
-  const sz          = useRef({ w: 800, h: 600, dpr: 1 })
-  const raf         = useRef(null)
-  const hoverTm     = useRef(null)
-  const [popup,     setPopup]   = useState(null)
-  const [loading,   setLoading] = useState(true)
+  const canvasRef = useRef(null)
+  const baseRef   = useRef(null)
+  const worldRef  = useRef(null)
+  const hitRef    = useRef(null)  // Uint16Array: per CSS-pixel country index (0=ocean)
+  const view      = useRef({ zoom: 1, panX: 0, panY: 0 })
+  const drag      = useRef({ on: false, sx: 0, sy: 0, lx: 0, ly: 0, moved: false })
+  const sz        = useRef({ w: 800, h: 600, dpr: 1 })
+  const raf       = useRef(null)
+  const hoverTm   = useRef(null)
+  const [popup,   setPopup]   = useState(null)
+  const [loading, setLoading] = useState(true)
 
-  // ── init ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     const el = canvasRef.current?.parentElement
     if (!el) return
-    const setup = () => {
-      const dpr = window.devicePixelRatio || 1
-      const w = el.clientWidth || 800
-      const h = el.clientHeight || 600
-      sz.current = { w, h, dpr }
-      canvasRef.current.width  = w * dpr
-      canvasRef.current.height = h * dpr
-      canvasRef.current.style.width  = w + 'px'
-      canvasRef.current.style.height = h + 'px'
-    }
-    setup()
+    const dpr = window.devicePixelRatio || 1
+    const w = el.clientWidth || 800
+    const h = el.clientHeight || 600
+    sz.current = { w, h, dpr }
+    canvasRef.current.width  = w * dpr
+    canvasRef.current.height = h * dpr
+    canvasRef.current.style.width  = w + 'px'
+    canvasRef.current.style.height = h + 'px'
 
     fetch('/worldmap.json').then(r => r.json()).then(data => {
       worldRef.current = data
-      const { w, h, dpr } = sz.current
-      buildBase(w, h, dpr, data)
-      buildHitmap(w, h, data)
+      buildAll(w, h, dpr, data)
       setLoading(false)
       draw()
     })
 
     const onResize = () => {
       const dpr = window.devicePixelRatio || 1
-      const w = el.clientWidth, h = el.clientHeight
-      sz.current = { w, h, dpr }
-      canvasRef.current.width  = w * dpr
-      canvasRef.current.height = h * dpr
-      canvasRef.current.style.width  = w + 'px'
-      canvasRef.current.style.height = h + 'px'
-      if (worldRef.current) {
-        buildBase(w, h, dpr, worldRef.current)
-        buildHitmap(w, h, worldRef.current)
-      }
+      const nw = el.clientWidth, nh = el.clientHeight
+      sz.current = { w: nw, h: nh, dpr }
+      canvasRef.current.width  = nw * dpr
+      canvasRef.current.height = nh * dpr
+      canvasRef.current.style.width  = nw + 'px'
+      canvasRef.current.style.height = nh + 'px'
+      if (worldRef.current) buildAll(nw, nh, dpr, worldRef.current)
       draw()
     }
     window.addEventListener('resize', onResize)
@@ -65,33 +57,31 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
 
   useEffect(() => { if (!loading) draw() }, [pixels, highlightedPixelId, loading])
 
-  // ── parse SVG path string into array of [x,y] rings ──────────────────────
+  // ── Parse path string → rings of [x,y] in grid coords ───────────────────
   function parsePath(d) {
     const rings = []
-    const parts = d.split('Z').filter(Boolean)
-    for (const part of parts) {
-      const coords = part.replace(/^M/, '').split(/[ML]/)
-      const pts = coords.map(c => {
-        const [x, y] = c.split(',').map(Number)
+    for (const seg of d.split('Z')) {
+      if (!seg.trim()) continue
+      const pts = seg.replace(/^M/, '').split(/[ML]/).map(s => {
+        const [x, y] = s.split(',').map(Number)
         return [x, y]
-      }).filter(p => !isNaN(p[0]))
-      if (pts.length > 2) rings.push(pts)
+      }).filter(p => !isNaN(p[0]) && !isNaN(p[1]))
+      if (pts.length >= 3) rings.push(pts)
     }
     return rings
   }
 
-  // ── transform path coords (grid space) to screen space ───────────────────
-  function transformRings(rings, w, h, zoom, panX, panY) {
-    return rings.map(ring =>
-      ring.map(([gx, gy]) => [
-        gx / worldRef.current.cols * w * zoom + panX,
-        gy / worldRef.current.rows * h * zoom + panY,
-      ])
-    )
+  // ── Scale grid coords to screen coords ───────────────────────────────────
+  function scaleRings(rings, w, h, zoom, panX, panY) {
+    const cols = worldRef.current.cols
+    const rows = worldRef.current.rows
+    return rings.map(ring => ring.map(([gx, gy]) => [
+      gx / cols * w * zoom + panX,
+      gy / rows * h * zoom + panY,
+    ]))
   }
 
-  // ── draw a list of rings as filled path ───────────────────────────────────
-  function fillRings(ctx, rings) {
+  function drawRings(ctx, rings) {
     ctx.beginPath()
     for (const ring of rings) {
       if (!ring.length) continue
@@ -99,102 +89,94 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
       for (let i = 1; i < ring.length; i++) ctx.lineTo(ring[i][0], ring[i][1])
       ctx.closePath()
     }
-    ctx.fill()
-    ctx.stroke()
   }
 
-  // ── pre-render base map at CSS-pixel resolution ───────────────────────────
-  function buildBase(w, h, dpr, world) {
+  // ── Build base map + hitmap once ─────────────────────────────────────────
+  function buildAll(w, h, dpr, world) {
     const pw = w * dpr, ph = h * dpr
-    const c = document.createElement('canvas')
-    c.width = pw; c.height = ph
-    const ctx = c.getContext('2d')
 
-    // Ocean
+    // 1. Base canvas (hi-res)
+    const base = document.createElement('canvas')
+    base.width = pw; base.height = ph
+    const ctx = base.getContext('2d')
+
+    // Ocean background
     ctx.fillStyle = OCEAN_COLOR
     ctx.fillRect(0, 0, pw, ph)
 
-    // Ocean grid
-    ctx.strokeStyle = OCEAN_GRID
-    ctx.lineWidth = 0.4 * dpr
-    for (let x = 0; x < pw; x += 80 * dpr) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ph); ctx.stroke() }
-    for (let y = 0; y < ph; y += 60 * dpr) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(pw, y); ctx.stroke() }
+    // Ocean grid (subtle)
+    ctx.strokeStyle = 'rgba(8,28,58,0.7)'
+    ctx.lineWidth = 0.5 * dpr
+    for (let x = 0; x < pw; x += 80 * dpr) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,ph); ctx.stroke() }
+    for (let y = 0; y < ph; y += 60 * dpr) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(pw,y); ctx.stroke() }
 
-    // Countries — fill
+    // All countries — uniform land color, clipped to their shapes
     for (const country of world.countries) {
       const rings = parsePath(country.p)
       const scaled = rings.map(ring => ring.map(([gx, gy]) => [
         gx / world.cols * pw,
         gy / world.rows * ph,
       ]))
-      ctx.fillStyle = country.c
+      ctx.fillStyle = LAND_COLOR
       ctx.strokeStyle = 'transparent'
-      ctx.lineWidth = 0
-      fillRings(ctx, scaled)
+      drawRings(ctx, scaled)
+      ctx.fill()
     }
 
-    // Country borders — draw on top
-    ctx.strokeStyle = 'rgba(80, 150, 220, 0.55)'
-    ctx.lineWidth = 0.6 * dpr
-    ctx.fillStyle = 'transparent'
+    // Borders on top
+    ctx.strokeStyle = BORDER_COLOR
+    ctx.lineWidth = 0.7 * dpr
     for (const country of world.countries) {
       const rings = parsePath(country.p)
       const scaled = rings.map(ring => ring.map(([gx, gy]) => [
         gx / world.cols * pw,
         gy / world.rows * ph,
       ]))
-      ctx.beginPath()
-      for (const ring of scaled) {
-        if (!ring.length) continue
-        ctx.moveTo(ring[0][0], ring[0][1])
-        for (let i = 1; i < ring.length; i++) ctx.lineTo(ring[i][0], ring[i][1])
-        ctx.closePath()
-      }
+      drawRings(ctx, scaled)
       ctx.stroke()
     }
 
-    baseRef.current = c
-  }
+    baseRef.current = base
 
-  // ── hitmap: for each CSS pixel, which country index (0=ocean) ─────────────
-  function buildHitmap(w, h, world) {
-    const hit = new Uint16Array(w * h) // 0 = ocean, 1-based country index
-    const off = document.createElement('canvas')
-    off.width = w; off.height = h
-    const ctx = off.getContext('2d')
+    // 2. Hitmap at CSS resolution (country index per pixel, 0=ocean)
+    const hit = document.createElement('canvas')
+    hit.width = w; hit.height = h
+    const hctx = hit.getContext('2d')
 
+    // Each country gets a unique color encoding its 1-based index
     world.countries.forEach((country, idx) => {
-      ctx.fillStyle = `rgb(${idx + 1},0,0)` // encode index in red channel
-      ctx.strokeStyle = 'transparent'
+      const r = (idx + 1) & 0xff
+      const g = ((idx + 1) >> 8) & 0xff
+      hctx.fillStyle = `rgb(${r},${g},0)`
+      hctx.strokeStyle = `rgb(${r},${g},0)`
+      hctx.lineWidth = 1.5 // slightly wider for coast coverage
       const rings = parsePath(country.p)
       const scaled = rings.map(ring => ring.map(([gx, gy]) => [
         gx / world.cols * w,
         gy / world.rows * h,
       ]))
-      ctx.beginPath()
-      for (const ring of scaled) {
-        if (!ring.length) continue
-        ctx.moveTo(ring[0][0], ring[0][1])
-        for (let i = 1; i < ring.length; i++) ctx.lineTo(ring[i][0], ring[i][1])
-        ctx.closePath()
-      }
-      ctx.fill()
+      drawRings(hctx, scaled)
+      hctx.fill()
+      hctx.stroke()
     })
 
-    const img = ctx.getImageData(0, 0, w, h).data
-    for (let i = 0; i < w * h; i++) hit[i] = img[i * 4] // red channel = country index
-    hitRef.current = { data: hit, w, h }
+    const imgData = hctx.getImageData(0, 0, w, h).data
+    const hitArr = new Uint16Array(w * h)
+    for (let i = 0; i < w * h; i++) {
+      hitArr[i] = imgData[i * 4] + (imgData[i * 4 + 1] << 8) // decode index
+    }
+    hitRef.current = { data: hitArr, w, h }
   }
 
-  // ── get country index from screen coord ────────────────────────────────────
-  function getCountryAtScreen(sx, sy) {
+  // ── Hit test ──────────────────────────────────────────────────────────────
+  function getCountryIdx(sx, sy) {
     const hit = hitRef.current
     if (!hit) return -1
     const { zoom, panX, panY } = view.current
     const bx = Math.round((sx - panX) / zoom)
     const by = Math.round((sy - panY) / zoom)
     if (bx < 0 || bx >= hit.w || by < 0 || by >= hit.h) return -1
-    return hit.data[by * hit.w + bx] - 1 // -1 = ocean
+    return hit.data[by * hit.w + bx] - 1  // -1 = ocean
   }
 
   function screenToPixelId(sx, sy) {
@@ -208,23 +190,32 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
     return row * GRID_COLS + col
   }
 
+  function isLandPixel(pixelId) {
+    const hit = hitRef.current
+    if (!hit) return false
+    const { w, h } = sz.current
+    const col = pixelId % GRID_COLS
+    const row = Math.floor(pixelId / GRID_COLS)
+    const sx = Math.round(col / GRID_COLS * w + 0.5 / GRID_COLS * w)
+    const sy = Math.round(row / GRID_ROWS * h + 0.5 / GRID_ROWS * h)
+    if (sx < 0 || sx >= hit.w || sy < 0 || sy >= hit.h) return false
+    return hit.data[sy * hit.w + sx] > 0
+  }
+
   function getCountryPixels(countryName) {
     const world = worldRef.current
-    if (!world) return []
-    const idx = world.countries.findIndex(c => c.n === countryName)
-    if (idx < 0) return []
     const hit = hitRef.current
-    if (!hit) return []
+    if (!world || !hit) return []
+    const idx = world.countries.findIndex(c => c.n === countryName) + 1
+    if (idx === 0) return []
     const { w, h } = sz.current
     const result = []
     for (let row = 0; row < GRID_ROWS; row++) {
       for (let col = 0; col < GRID_COLS; col++) {
-        const sx = Math.round(col / GRID_COLS * w)
-        const sy = Math.round(row / GRID_ROWS * h)
-        if (sx < 0 || sx >= hit.w || sy < 0 || sy >= hit.h) continue
-        if (hit.data[sy * hit.w + sx] - 1 === idx) {
-          result.push(row * GRID_COLS + col)
-        }
+        const sx = Math.round((col + 0.5) / GRID_COLS * w)
+        const sy = Math.round((row + 0.5) / GRID_ROWS * h)
+        if (sx >= hit.w || sy >= hit.h) continue
+        if (hit.data[sy * hit.w + sx] === idx) result.push(row * GRID_COLS + col)
       }
     }
     return result
@@ -232,21 +223,19 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
 
   function getSubregionPixels(subregion) {
     const world = worldRef.current
-    if (!world) return []
-    const indices = new Set(
-      world.countries.map((c, i) => c.s === subregion ? i : -1).filter(i => i >= 0)
-    )
     const hit = hitRef.current
-    if (!hit) return []
+    if (!world || !hit) return []
+    const idxSet = new Set(
+      world.countries.map((c, i) => c.s === subregion ? i + 1 : 0).filter(Boolean)
+    )
     const { w, h } = sz.current
     const result = []
     for (let row = 0; row < GRID_ROWS; row++) {
       for (let col = 0; col < GRID_COLS; col++) {
-        const sx = Math.round(col / GRID_COLS * w)
-        const sy = Math.round(row / GRID_ROWS * h)
-        if (sx < 0 || sx >= hit.w || sy < 0 || sy >= hit.h) continue
-        const ci = hit.data[sy * hit.w + sx] - 1
-        if (indices.has(ci)) result.push(row * GRID_COLS + col)
+        const sx = Math.round((col + 0.5) / GRID_COLS * w)
+        const sy = Math.round((row + 0.5) / GRID_ROWS * h)
+        if (sx >= hit.w || sy >= hit.h) continue
+        if (idxSet.has(hit.data[sy * hit.w + sx])) result.push(row * GRID_COLS + col)
       }
     }
     return result
@@ -261,7 +250,7 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
     return parseFloat(t.toFixed(4))
   }
 
-  // ── main draw ─────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────
   function draw() {
     if (raf.current) cancelAnimationFrame(raf.current)
     raf.current = requestAnimationFrame(() => {
@@ -273,54 +262,75 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
       const world = worldRef.current
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-
-      // Ocean bg
       ctx.fillStyle = OCEAN_COLOR
       ctx.fillRect(0, 0, w, h)
 
-      // Base map (pre-rendered)
+      // Base map
       ctx.save()
       ctx.translate(panX, panY)
       ctx.scale(zoom, zoom)
       ctx.drawImage(baseRef.current, 0, 0, w, h)
       ctx.restore()
 
-      // Pixel grid + claimed pixels
+      // Pixel grid + claimed — clipped to land shapes
       const cw = w * zoom / GRID_COLS
       const ch = h * zoom / GRID_ROWS
 
-      // Grid when zoomed in
-      if (cw > 5) {
-        const sc = Math.max(0, Math.floor(-panX / cw))
-        const ec = Math.min(GRID_COLS, Math.ceil((w - panX) / cw))
-        const sr = Math.max(0, Math.floor(-panY / ch))
-        const er = Math.min(GRID_ROWS, Math.ceil((h - panY) / ch))
-        ctx.strokeStyle = GRID_COLOR
-        ctx.lineWidth = 0.4
-        for (let c = sc; c <= ec; c++) {
-          const x = panX + c * cw
-          ctx.beginPath(); ctx.moveTo(x, panY + sr * ch); ctx.lineTo(x, panY + er * ch); ctx.stroke()
+      if (cw > 3) {
+        // Build land clip path
+        ctx.save()
+        ctx.translate(panX, panY)
+        ctx.scale(zoom, zoom)
+        ctx.beginPath()
+        for (const country of world.countries) {
+          const rings = parsePath(country.p)
+          for (const ring of rings) {
+            if (!ring.length) continue
+            ctx.moveTo(ring[0][0] / world.cols * w, ring[0][1] / world.rows * h)
+            for (let i = 1; i < ring.length; i++) {
+              ctx.lineTo(ring[i][0] / world.cols * w, ring[i][1] / world.rows * h)
+            }
+            ctx.closePath()
+          }
         }
-        for (let r = sr; r <= er; r++) {
-          const y = panY + r * ch
-          ctx.beginPath(); ctx.moveTo(panX + sc * cw, y); ctx.lineTo(panX + ec * cw, y); ctx.stroke()
-        }
-      }
+        ctx.clip()
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
-      // Claimed pixels
-      pixels.forEach((pixel, id) => {
-        if (!pixel.owner_wallet) return
-        const col = id % GRID_COLS, row = Math.floor(id / GRID_COLS)
-        const x = panX + col * cw, y = panY + row * ch
-        if (x + cw < 0 || x > w || y + ch < 0 || y > h) return
-        ctx.shadowColor = pixel.color || CLAIM_COLOR
-        ctx.shadowBlur = zoom > 3 ? 8 : 4
-        ctx.fillStyle = pixel.color || CLAIM_COLOR
-        ctx.globalAlpha = 0.85
-        ctx.fillRect(x, y, cw, ch)
-        ctx.globalAlpha = 1
-        ctx.shadowBlur = 0
-      })
+        // Grid
+        if (cw > 5) {
+          const sc = Math.max(0, Math.floor(-panX / cw))
+          const ec = Math.min(GRID_COLS, Math.ceil((w - panX) / cw))
+          const sr = Math.max(0, Math.floor(-panY / ch))
+          const er = Math.min(GRID_ROWS, Math.ceil((h - panY) / ch))
+          ctx.strokeStyle = GRID_COLOR
+          ctx.lineWidth = 0.4
+          for (let c = sc; c <= ec; c++) {
+            const x = panX + c * cw
+            ctx.beginPath(); ctx.moveTo(x, panY + sr * ch); ctx.lineTo(x, panY + er * ch); ctx.stroke()
+          }
+          for (let r = sr; r <= er; r++) {
+            const y = panY + r * ch
+            ctx.beginPath(); ctx.moveTo(panX + sc * cw, y); ctx.lineTo(panX + ec * cw, y); ctx.stroke()
+          }
+        }
+
+        // Claimed pixels
+        pixels.forEach((pixel, id) => {
+          if (!pixel.owner_wallet) return
+          const col = id % GRID_COLS, row = Math.floor(id / GRID_COLS)
+          const x = panX + col * cw, y = panY + row * ch
+          if (x + cw < 0 || x > w || y + ch < 0 || y > h) return
+          ctx.shadowColor = pixel.color || CLAIM_COLOR
+          ctx.shadowBlur = zoom > 3 ? 8 : 4
+          ctx.fillStyle = pixel.color || CLAIM_COLOR
+          ctx.globalAlpha = 0.85
+          ctx.fillRect(x, y, cw, ch)
+          ctx.globalAlpha = 1
+          ctx.shadowBlur = 0
+        })
+
+        ctx.restore()
+      }
 
       // Highlighted pixel
       if (highlightedPixelId != null) {
@@ -333,7 +343,7 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
     })
   }
 
-  // ── mouse ─────────────────────────────────────────────────────────────────
+  // ── Mouse events ──────────────────────────────────────────────────────────
   function onDown(e) {
     clearTimeout(hoverTm.current)
     drag.current = { on: true, sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY, moved: false }
@@ -349,10 +359,12 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
       canvasRef.current.style.cursor = 'grabbing'
       setPopup(null); draw(); return
     }
+
     const r = canvasRef.current.getBoundingClientRect()
     const sx = e.clientX - r.left, sy = e.clientY - r.top
-    const ci = getCountryAtScreen(sx, sy)
+    const ci = getCountryIdx(sx, sy)
     canvasRef.current.style.cursor = ci >= 0 ? 'crosshair' : 'not-allowed'
+
     clearTimeout(hoverTm.current)
     if (ci >= 0) {
       hoverTm.current = setTimeout(() => {
@@ -438,7 +450,9 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
               {popup.country}
             </div>
             <div style={{ fontFamily: 'monospace', fontSize: 9, color: popup.pixel?.owner_wallet ? '#5a8aaa' : '#3a8a5a', marginTop: 2 }}>
-              {popup.pixel?.owner_wallet ? `Owned · ${popup.pixel.owner_name || popup.pixel.owner_wallet.slice(0,8) + '...'}` : 'Unclaimed territory'}
+              {popup.pixel?.owner_wallet
+                ? `Owned · ${popup.pixel.owner_name || popup.pixel.owner_wallet.slice(0, 8) + '...'}`
+                : 'Unclaimed territory'}
             </div>
           </div>
 
@@ -468,7 +482,7 @@ function PurchaseRow({ label, sub, price, onClick, last }) {
           <div style={{ fontFamily: 'monospace', fontSize: 8, color: '#1e4a6a' }}>{sub}</div>
         </div>
         <div style={{ textAlign: 'right' }}>
-          <div style={{ fontFamily: 'Bebas Neue,sans-serif', fontSize: 15, color: '#e8440a', lineHeight: 1 }}>
+          <div style={{ fontFamily: 'Bebas Neue,sans-serif', fontSize: 15, color: CLAIM_COLOR, lineHeight: 1 }}>
             {price.toFixed(price > 10 ? 1 : 4)} SOL
           </div>
           <div style={{ fontFamily: 'monospace', fontSize: 8, color: '#1e4a6a' }}>${(price * 150).toFixed(price > 10 ? 0 : 2)}</div>
@@ -478,7 +492,7 @@ function PurchaseRow({ label, sub, price, onClick, last }) {
         onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
         onClick={onClick}
         style={{
-          width: '100%', background: hover ? '#c83a08' : '#e8440a',
+          width: '100%', background: hover ? '#c83a08' : CLAIM_COLOR,
           border: 'none', color: '#fff',
           fontFamily: 'Bebas Neue,sans-serif', fontSize: 12, letterSpacing: 2,
           padding: '6px 0', cursor: 'pointer', transition: 'background 0.15s',
