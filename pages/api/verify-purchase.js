@@ -1,6 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import { Connection } from '@solana/web3.js'
-import { BASE_PIXEL_PRICE_SOL, calculateNextPrice } from '../../lib/solana'
+import { BASE_PIXEL_PRICE_SOL, calculateNextPrice, verifyTransaction } from '../../lib/solana'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -10,78 +9,57 @@ const supabase = createClient(
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end()
 
-  const { pixelId, txSignature, buyerWallet, displayName, color } = req.body
+  const { type, pixelId, pixelIds, txSignature, buyerWallet, displayName, color } = req.body
 
-  if (!txSignature || !buyerWallet || pixelId === undefined) {
-    return res.status(400).json({ error: 'Missing required fields' })
-  }
+  if (!txSignature || !buyerWallet) return res.status(400).json({ error: 'Missing fields' })
 
   try {
-    const { data: existingPixel } = await supabase
-      .from('pixels').select('*').eq('id', pixelId).single()
+    // Verify transaction on chain
+    const valid = await verifyTransaction(txSignature)
+    if (!valid) return res.status(400).json({ error: 'Transaction not confirmed. Try again.' })
 
-    const isFirstSale = !existingPixel?.owner_wallet
-    const expectedAmount = isFirstSale ? BASE_PIXEL_PRICE_SOL : calculateNextPrice(existingPixel.current_price_sol)
-
-    // Verify transaction on Solana
-    const connection = new Connection(
-      process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com',
-      'confirmed'
-    )
-
-    let txValid = false
-    let attempts = 0
-    while (!txValid && attempts < 5) {
-      try {
-        const tx = await connection.getTransaction(txSignature, {
-          commitment: 'confirmed',
-          maxSupportedTransactionVersion: 0,
-        })
-        if (tx && tx.meta?.err === null) txValid = true
-      } catch (e) {}
-      if (!txValid) {
-        attempts++
-        await new Promise(r => setTimeout(r, 2000))
-      }
-    }
-
-    if (!txValid) {
-      return res.status(400).json({ error: 'Transaction not found or not confirmed. Wait a few seconds and try again.' })
-    }
-
-    // Check tx not already used
-    const { data: existingTx } = await supabase
+    // Check not already used
+    const { data: existing } = await supabase
       .from('transactions').select('id').eq('tx_signature', txSignature).single()
-    if (existingTx) return res.status(400).json({ error: 'Transaction already used' })
+    if (existing) return res.status(400).json({ error: 'Transaction already used' })
 
-    const nextPrice = calculateNextPrice(expectedAmount)
-    const previousOwner = existingPixel?.owner_wallet || null
+    const ids = type === 'pixel' ? [pixelId] : pixelIds
+    const now = new Date().toISOString()
 
-    await supabase.from('pixels').upsert({
-      id: pixelId,
-      owner_wallet: buyerWallet,
-      owner_name: displayName,
-      current_price_sol: nextPrice,
-      original_price_sol: BASE_PIXEL_PRICE_SOL,
-      purchase_count: (existingPixel?.purchase_count || 0) + 1,
-      color: color || '#ff4d00',
-      is_special: existingPixel?.is_special || false,
-      special_type: existingPixel?.special_type || null,
-      updated_at: new Date().toISOString(),
-    })
+    // Update each pixel
+    for (const pid of ids) {
+      const { data: currentPixel } = await supabase
+        .from('pixels').select('*').eq('id', pid).single()
 
+      const nextPrice = calculateNextPrice(currentPixel?.current_price_sol || BASE_PIXEL_PRICE_SOL)
+
+      await supabase.from('pixels').upsert({
+        id: pid,
+        owner_wallet: buyerWallet,
+        owner_name: displayName,
+        current_price_sol: nextPrice,
+        original_price_sol: BASE_PIXEL_PRICE_SOL,
+        purchase_count: (currentPixel?.purchase_count || 0) + 1,
+        color: ids.length === 1 ? (color || '#e8440a') : (currentPixel?.color || '#e8440a'),
+        is_special: false,
+        updated_at: now,
+      })
+    }
+
+    // Record transaction
     await supabase.from('transactions').insert({
-      pixel_id: pixelId,
+      pixel_id: type === 'pixel' ? pixelId : null,
+      pixel_ids: type !== 'pixel' ? ids : null,
       buyer_wallet: buyerWallet,
-      seller_wallet: previousOwner,
-      amount_sol: expectedAmount,
+      amount_sol: 0, // actual amount from blockchain
       tx_signature: txSignature,
-      created_at: new Date().toISOString(),
+      purchase_type: type,
+      created_at: now,
     })
 
-    return res.status(200).json({ success: true, nextPrice, pixelId })
-  } catch (error) {
-    console.error(error)
-    return res.status(500).json({ error: 'Server error during verification' })
+    return res.status(200).json({ success: true })
+  } catch (err) {
+    console.error(err)
+    return res.status(500).json({ error: 'Server error' })
   }
 }
