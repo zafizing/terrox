@@ -4,21 +4,17 @@ import {
   gridToLatLng, idToGrid, PIXEL_WIDTH, PIXEL_HEIGHT
 } from '../lib/pixels'
 
-// ─── Colors ───────────────────────────────────────────────────────────────────
 const OCEAN_COLOR = '#051525'
 const LAND_COLOR = '#1e3a52'
 const BORDER_COLOR = '#4a8ab0'
 const GRID_COLOR = 'rgba(80, 160, 255, 0.45)'
 const HIGHLIGHT_COLOR = '#e8440a'
 
-// ─── Mercator projection helpers ──────────────────────────────────────────────
-function lngToX(lng, width) {
-  return ((lng + 180) / 360) * width
-}
-function latToY(lat, height) {
+function lngToX(lng, w) { return ((lng + 180) / 360) * w }
+function latToY(lat, h) {
   const r = Math.log(Math.tan((90 + lat) * Math.PI / 360))
   const maxR = Math.log(Math.tan((90 + 85) * Math.PI / 360))
-  return ((maxR - r) / (2 * maxR)) * height
+  return ((maxR - r) / (2 * maxR)) * h
 }
 function screenToLatLng(sx, sy, w, h, zoom, panX, panY) {
   const nx = (sx - panX) / zoom
@@ -30,16 +26,69 @@ function screenToLatLng(sx, sy, w, h, zoom, panX, panY) {
   return { lat, lng }
 }
 
+// Draw all GeoJSON polygons onto a context
+function drawGeo(ctx, geo, w, h, zoom, panX, panY, fill, stroke, lineWidth) {
+  ctx.fillStyle = fill
+  ctx.strokeStyle = stroke
+  ctx.lineWidth = lineWidth
+  for (const f of geo.features) {
+    const geom = f.geometry
+    if (!geom) continue
+    const polys = geom.type === 'Polygon' ? [geom.coordinates]
+      : geom.type === 'MultiPolygon' ? geom.coordinates : []
+    for (const poly of polys) {
+      for (const ring of poly) {
+        ctx.beginPath()
+        let first = true
+        for (const [lng, lat] of ring) {
+          const x = lngToX(lng, w) * zoom + panX
+          const y = latToY(lat, h) * zoom + panY
+          first ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
+          first = false
+        }
+        ctx.closePath()
+        ctx.fill()
+        ctx.stroke()
+      }
+    }
+  }
+}
+
+// Build clip path from GeoJSON (reusable)
+function buildClipPath(ctx, geo, w, h, zoom, panX, panY) {
+  ctx.beginPath()
+  for (const f of geo.features) {
+    const geom = f.geometry
+    if (!geom) continue
+    const polys = geom.type === 'Polygon' ? [geom.coordinates]
+      : geom.type === 'MultiPolygon' ? geom.coordinates : []
+    for (const poly of polys) {
+      for (const ring of poly) {
+        let first = true
+        for (const [lng, lat] of ring) {
+          const x = lngToX(lng, w) * zoom + panX
+          const y = latToY(lat, h) * zoom + panY
+          first ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
+          first = false
+        }
+        ctx.closePath()
+      }
+    }
+  }
+}
+
 export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
   const canvasRef = useRef(null)
+  // Pre-rendered offscreen canvases — built ONCE, reused every frame
+  const baseCanvasRef = useRef(null)   // ocean + land + borders (zoom=1)
+  const landMaskRef = useRef(null)     // white=land black=ocean for hit testing
   const geoRef = useRef(null)
-  const landBitmapRef = useRef(null) // offscreen pixel-level land mask
   const viewRef = useRef({ zoom: 1, panX: 0, panY: 0 })
-  const dragRef = useRef({ dragging: false, startX: 0, startY: 0, moved: false })
+  const dragRef = useRef({ dragging: false, startX: 0, startY: 0, lastX: 0, lastY: 0, moved: false })
   const sizeRef = useRef({ w: 800, h: 600 })
+  const rafRef = useRef(null)
   const [ready, setReady] = useState(false)
 
-  // ─── Setup ────────────────────────────────────────────────────────────────
   useEffect(() => {
     const container = canvasRef.current?.parentElement
     if (!container) return
@@ -51,14 +100,12 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
 
     const load = async () => {
       try {
-        const res = await fetch(
-          'https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson'
-        )
+        const res = await fetch('https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson')
         geoRef.current = await res.json()
       } catch (e) {
         geoRef.current = null
       }
-      buildLandMask(w, h)
+      prebuild(w, h)
       setReady(true)
     }
     load()
@@ -67,108 +114,81 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
       const nw = container.clientWidth
       const nh = container.clientHeight
       sizeRef.current = { w: nw, h: nh }
-      if (canvasRef.current) {
-        canvasRef.current.width = nw
-        canvasRef.current.height = nh
-      }
-      buildLandMask(nw, nh)
-      renderMap()
+      canvasRef.current.width = nw
+      canvasRef.current.height = nh
+      prebuild(nw, nh)
+      scheduleRender()
     }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
-  useEffect(() => {
-    if (ready) renderMap()
-  }, [ready, pixels, highlightedPixelId])
+  useEffect(() => { if (ready) scheduleRender() }, [ready, pixels, highlightedPixelId])
 
-  // ─── Land mask (offscreen canvas at zoom=1, pan=0) ────────────────────────
-  // We render all land polygons once at base view.
-  // isLand() samples this bitmap — O(1) per lookup, perfectly accurate.
-  function buildLandMask(w, h) {
-    const off = document.createElement('canvas')
-    off.width = w
-    off.height = h
-    const ctx = off.getContext('2d')
-    ctx.fillStyle = '#000'
-    ctx.fillRect(0, 0, w, h)
+  // ─── Pre-build offscreen canvases at BASE resolution (zoom=1, pan=0) ──────
+  // This is the expensive work — done ONCE per resize
+  function prebuild(w, h) {
+    // 1. Base map canvas (ocean + land + borders)
+    const base = document.createElement('canvas')
+    base.width = w; base.height = h
+    const bCtx = base.getContext('2d')
+    bCtx.fillStyle = OCEAN_COLOR
+    bCtx.fillRect(0, 0, w, h)
     if (geoRef.current) {
-      ctx.fillStyle = '#fff'
-      ctx.strokeStyle = '#fff'
-      ctx.lineWidth = 0.5
-      drawGeo(ctx, geoRef.current, w, h, 1, 0, 0)
+      drawGeo(bCtx, geoRef.current, w, h, 1, 0, 0, LAND_COLOR, BORDER_COLOR, 0.5)
     }
-    landBitmapRef.current = { data: ctx.getImageData(0, 0, w, h).data, w, h }
+    baseCanvasRef.current = base
+
+    // 2. Land mask (white=land, black=ocean) for hit testing
+    const mask = document.createElement('canvas')
+    mask.width = w; mask.height = h
+    const mCtx = mask.getContext('2d')
+    mCtx.fillStyle = '#000'
+    mCtx.fillRect(0, 0, w, h)
+    if (geoRef.current) {
+      drawGeo(mCtx, geoRef.current, w, h, 1, 0, 0, '#fff', '#fff', 1)
+    }
+    // Store as ImageData for fast pixel lookup
+    landMaskRef.current = { data: mCtx.getImageData(0, 0, w, h).data, w, h }
   }
 
+  // ─── Fast land check (bitmap lookup, O(1)) ─────────────────────────────────
   function isLand(screenX, screenY) {
-    // Convert screen coords back to base (zoom=1, pan=0) coords
     const { zoom, panX, panY } = viewRef.current
-    const bx = (screenX - panX) / zoom
-    const by = (screenY - panY) / zoom
-    const bm = landBitmapRef.current
-    if (!bm) return true
-    const ix = Math.round(bx)
-    const iy = Math.round(by)
-    if (ix < 0 || ix >= bm.w || iy < 0 || iy >= bm.h) return false
-    return bm.data[(iy * bm.w + ix) * 4] > 128
+    // Map screen → base coords (zoom=1, pan=0)
+    const bx = Math.round((screenX - panX) / zoom)
+    const by = Math.round((screenY - panY) / zoom)
+    const m = landMaskRef.current
+    if (!m) return true
+    if (bx < 0 || bx >= m.w || by < 0 || by >= m.h) return false
+    return m.data[(by * m.w + bx) * 4] > 128
   }
 
-  // ─── Draw GeoJSON ─────────────────────────────────────────────────────────
-  function drawGeo(ctx, geo, w, h, zoom, panX, panY) {
-    for (const f of geo.features) {
-      const geom = f.geometry
-      if (!geom) continue
-      const polys = geom.type === 'Polygon'
-        ? [geom.coordinates]
-        : geom.type === 'MultiPolygon'
-          ? geom.coordinates
-          : []
-      for (const poly of polys) {
-        for (const ring of poly) {
-          ctx.beginPath()
-          let first = true
-          for (const [lng, lat] of ring) {
-            const x = lngToX(lng, w) * zoom + panX
-            const y = latToY(lat, h) * zoom + panY
-            first ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
-            first = false
-          }
-          ctx.closePath()
-          ctx.fill()
-          ctx.stroke()
-        }
-      }
-    }
+  // ─── Schedule render (debounced via RAF) ───────────────────────────────────
+  function scheduleRender() {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    rafRef.current = requestAnimationFrame(render)
   }
 
-  // ─── Main render ──────────────────────────────────────────────────────────
-  function renderMap() {
+  // ─── Main render — fast, no GeoJSON iteration ─────────────────────────────
+  function render() {
     const canvas = canvasRef.current
-    if (!canvas) return
+    if (!canvas || !baseCanvasRef.current) return
     const { w, h } = sizeRef.current
     const { zoom, panX, panY } = viewRef.current
     const ctx = canvas.getContext('2d')
 
-    // Ocean
-    ctx.fillStyle = OCEAN_COLOR
-    ctx.fillRect(0, 0, w, h)
+    // Clear
+    ctx.clearRect(0, 0, w, h)
 
-    // Subtle ocean grid
-    ctx.strokeStyle = 'rgba(10, 40, 80, 0.5)'
-    ctx.lineWidth = 0.3
-    for (let x = 0; x < w; x += 60) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke() }
-    for (let y = 0; y < h; y += 60) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke() }
+    // Draw pre-rendered base map scaled + translated
+    ctx.save()
+    ctx.translate(panX, panY)
+    ctx.scale(zoom, zoom)
+    ctx.drawImage(baseCanvasRef.current, 0, 0)
+    ctx.restore()
 
-    // Land
-    if (geoRef.current) {
-      ctx.fillStyle = LAND_COLOR
-      ctx.strokeStyle = BORDER_COLOR
-      ctx.lineWidth = 0.8 / zoom
-      drawGeo(ctx, geoRef.current, w, h, zoom, panX, panY)
-    }
-
-    // Pixel grid — LAND ONLY using clipPath per polygon
+    // Pixel grid — land only via clip
     const originX = lngToX(WORLD_BOUNDS.minLng, w) * zoom + panX
     const originY = latToY(WORLD_BOUNDS.maxLat, h) * zoom + panY
     const endX = lngToX(WORLD_BOUNDS.maxLng, w) * zoom + panX
@@ -177,85 +197,39 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
     const cellH = (endY - originY) / GRID_ROWS
 
     if (cellW > 1.5 && geoRef.current) {
-      // Clip grid to land shapes only
       ctx.save()
-      ctx.beginPath()
-      for (const f of geoRef.current.features) {
-        const geom = f.geometry
-        if (!geom) continue
-        const polys = geom.type === 'Polygon'
-          ? [geom.coordinates]
-          : geom.type === 'MultiPolygon'
-            ? geom.coordinates
-            : []
-        for (const poly of polys) {
-          for (const ring of poly) {
-            let first = true
-            for (const [lng, lat] of ring) {
-              const x = lngToX(lng, w) * zoom + panX
-              const y = latToY(lat, h) * zoom + panY
-              first ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
-              first = false
-            }
-            ctx.closePath()
-          }
-        }
-      }
+      // Clip to land using transformed GeoJSON
+      buildClipPath(ctx, geoRef.current, w, h, zoom, panX, panY)
       ctx.clip()
-
-      // Now draw grid — only visible inside land clip
       ctx.strokeStyle = GRID_COLOR
       ctx.lineWidth = 0.4
       for (let col = 0; col <= GRID_COLS; col++) {
         const x = originX + col * cellW
-        if (x < -cellW || x > w + cellW) continue
+        if (x < -10 || x > w + 10) continue
         ctx.beginPath(); ctx.moveTo(x, originY); ctx.lineTo(x, endY); ctx.stroke()
       }
       for (let row = 0; row <= GRID_ROWS; row++) {
         const y = originY + row * cellH
-        if (y < -cellH || y > h + cellH) continue
+        if (y < -10 || y > h + 10) continue
         ctx.beginPath(); ctx.moveTo(originX, y); ctx.lineTo(endX, y); ctx.stroke()
       }
       ctx.restore()
     }
 
     // Claimed pixels — also clipped to land
-    if (geoRef.current) {
+    if (pixels.size > 0 && geoRef.current) {
       ctx.save()
-      ctx.beginPath()
-      for (const f of geoRef.current.features) {
-        const geom = f.geometry
-        if (!geom) continue
-        const polys = geom.type === 'Polygon'
-          ? [geom.coordinates]
-          : geom.type === 'MultiPolygon'
-            ? geom.coordinates
-            : []
-        for (const poly of polys) {
-          for (const ring of poly) {
-            let first = true
-            for (const [lng, lat] of ring) {
-              const x = lngToX(lng, w) * zoom + panX
-              const y = latToY(lat, h) * zoom + panY
-              first ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
-              first = false
-            }
-            ctx.closePath()
-          }
-        }
-      }
+      buildClipPath(ctx, geoRef.current, w, h, zoom, panX, panY)
       ctx.clip()
-
       pixels.forEach((pixel, id) => {
         if (!pixel.owner_wallet) return
         const { col, row } = idToGrid(id)
-        const { lat, lng } = gridToLatLng(col, row)
         const x = originX + col * cellW
         const y = originY + row * cellH
         if (x + cellW < 0 || x > w || y + cellH < 0 || y > h) return
         const color = pixel.color || HIGHLIGHT_COLOR
         ctx.shadowColor = color
-        ctx.shadowBlur = zoom >= 4 ? 10 : 5
+        ctx.shadowBlur = zoom >= 4 ? 8 : 4
         ctx.fillStyle = color
         ctx.globalAlpha = 0.85
         ctx.fillRect(x, y, cellW, cellH)
@@ -282,14 +256,7 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
 
   // ─── Mouse events ─────────────────────────────────────────────────────────
   function onMouseDown(e) {
-    dragRef.current = {
-      dragging: true,
-      startX: e.clientX,
-      startY: e.clientY,
-      lastX: e.clientX,
-      lastY: e.clientY,
-      moved: false,
-    }
+    dragRef.current = { dragging: true, startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY, moved: false }
   }
 
   function onMouseMove(e) {
@@ -297,56 +264,38 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
     if (d.dragging) {
       const dx = e.clientX - d.lastX
       const dy = e.clientY - d.lastY
-      // Mark as moved if dragged more than 4px total
-      const totalDx = e.clientX - d.startX
-      const totalDy = e.clientY - d.startY
-      if (Math.abs(totalDx) > 4 || Math.abs(totalDy) > 4) d.moved = true
+      if (Math.abs(e.clientX - d.startX) > 4 || Math.abs(e.clientY - d.startY) > 4) d.moved = true
       viewRef.current.panX += dx
       viewRef.current.panY += dy
       d.lastX = e.clientX
       d.lastY = e.clientY
-      renderMap()
+      scheduleRender()
+      canvasRef.current.style.cursor = 'grabbing'
+      return
     }
-    // Cursor feedback
     const rect = canvasRef.current.getBoundingClientRect()
     const sx = e.clientX - rect.left
     const sy = e.clientY - rect.top
-    canvasRef.current.style.cursor = d.dragging
-      ? 'grabbing'
-      : isLand(sx, sy) ? 'crosshair' : 'not-allowed'
+    canvasRef.current.style.cursor = isLand(sx, sy) ? 'crosshair' : 'not-allowed'
   }
 
-  function onMouseUp(e) {
-    dragRef.current.dragging = false
-  }
-
-  function onMouseLeave() {
-    dragRef.current.dragging = false
-  }
+  function onMouseUp() { dragRef.current.dragging = false }
+  function onMouseLeave() { dragRef.current.dragging = false }
 
   function onClick(e) {
     const d = dragRef.current
-    // Ignore if this was a drag
     if (d.moved) { d.moved = false; return }
-
     const rect = canvasRef.current.getBoundingClientRect()
     const sx = e.clientX - rect.left
     const sy = e.clientY - rect.top
-
-    // Block ocean clicks
     if (!isLand(sx, sy)) return
-
     const { w, h } = sizeRef.current
     const { zoom, panX, panY } = viewRef.current
     const { lat, lng } = screenToLatLng(sx, sy, w, h, zoom, panX, panY)
-
     const col = Math.floor((lng - WORLD_BOUNDS.minLng) / PIXEL_WIDTH)
     const row = Math.floor((WORLD_BOUNDS.maxLat - lat) / PIXEL_HEIGHT)
     if (col < 0 || col >= GRID_COLS || row < 0 || row >= GRID_ROWS) return
-
-    const pixelId = row * GRID_COLS + col
-    const { lat: cLat, lng: cLng } = gridToLatLng(col, row)
-    onPixelClick(pixelId, cLat, cLng)
+    onPixelClick(row * GRID_COLS + col, gridToLatLng(col, row).lat, gridToLatLng(col, row).lng)
   }
 
   function onWheel(e) {
@@ -362,13 +311,13 @@ export default function PixelMap({ pixels, onPixelClick, highlightedPixelId }) {
       panX: mx - scale * (mx - viewRef.current.panX),
       panY: my - scale * (my - viewRef.current.panY),
     }
-    renderMap()
+    scheduleRender()
   }
 
   return (
     <canvas
       ref={canvasRef}
-      style={{ width: '100%', height: '100%', display: 'block', background: OCEAN_COLOR, cursor: 'crosshair' }}
+      style={{ width: '100%', height: '100%', display: 'block', background: OCEAN_COLOR }}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
