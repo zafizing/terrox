@@ -13,7 +13,10 @@
     "react-dom": "^18",
     "@supabase/supabase-js": "^2.39.0",
     "@solana/web3.js": "^1.87.6",
-    "leaflet": "^1.9.4",
-    "react-leaflet": "^4.2.1"
+    "@solana/wallet-adapter-base": "^0.9.23",
+    "@solana/wallet-adapter-react": "^0.15.35",
+    "@solana/wallet-adapter-react-ui": "^0.9.35",
+    "@solana/wallet-adapter-phantom": "^0.9.24",
+    "@solana/wallet-adapter-solflare": "^0.6.28"
   }
 }
