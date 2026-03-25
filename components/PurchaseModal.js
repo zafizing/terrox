@@ -49,12 +49,24 @@ export default function PurchaseModal({ intent, onClose, onSuccess }) {
           isResale
         )
       } else {
-        // Bulk: build pixel groups with owner info
-        const pixelGroups = intent.pixelIds.map(pid => ({
-          pixelId: pid,
-          currentPriceSol: BASE_PIXEL_PRICE_SOL, // simplified — use actual prices in production
-          ownerWallet: null, // TODO: look up actual owners
-        }))
+        // Bulk: fetch actual pixel data for correct pricing
+        let pixelData = new Map()
+        try {
+          const resp = await fetch('/api/pixels')
+          const json = await resp.json()
+          json.pixels?.forEach(p => pixelData.set(p.id, p))
+        } catch (e) { console.warn('Could not fetch pixel data for bulk', e) }
+
+        const pixelGroups = intent.pixelIds.map(pid => {
+          const existing = pixelData.get(pid)
+          return {
+            pixelId: pid,
+            currentPriceSol: existing?.current_price_sol
+              ? calculateNextPrice(existing.current_price_sol)
+              : BASE_PIXEL_PRICE_SOL,
+            ownerWallet: existing?.owner_wallet || null,
+          }
+        })
         tx = await buildBulkPaymentTransaction(publicKey, pixelGroups)
       }
 
