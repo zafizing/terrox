@@ -306,17 +306,11 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
 
       // Grid + claimed pixels masked to land
       if (cw > 3 && cache.clipMask) {
+        // Step 1: Draw grid + claimed pixels onto a temp canvas
         const tmp = document.createElement('canvas')
         tmp.width = w; tmp.height = h
         const tx = tmp.getContext('2d')
 
-        // Draw clip mask
-        tx.drawImage(cache.clipMask, 0, 0)
-        tx.globalCompositeOperation = 'source-atop'
-
-        // Grid + pixels in base coordinate space (no zoom)
-        // We need to draw at the zoomed/panned coordinates but within the mask's base space
-        // So we inverse-transform: draw at (pos - pan) / zoom
         const cellW = w / GRID_COLS, cellH = h / GRID_ROWS
 
         // Visible range in grid coordinates
@@ -353,9 +347,12 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
           tx.shadowBlur = 0
         })
 
+        // Step 2: Cut with land mask — only land pixels survive
+        tx.globalCompositeOperation = 'destination-in'
+        tx.drawImage(cache.clipMask, 0, 0)
         tx.globalCompositeOperation = 'source-over'
 
-        // Draw masked overlay onto main canvas with zoom transform
+        // Step 3: Overlay masked grid onto main canvas with zoom
         ctx.save()
         ctx.translate(panX, panY)
         ctx.scale(zoom, zoom)
