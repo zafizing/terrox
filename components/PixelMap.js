@@ -50,7 +50,7 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
   const worldRef  = useRef(null)
   const cacheRef  = useRef({
     base: null, clipMask: null, hitData: null, hitW: 0, hitH: 0,
-    parsedPaths: null, lastW: 0, lastH: 0, lastDpr: 0,
+    parsedPaths: null, lastW: 0, lastH: 0, lastDpr: 0, baseTier: 0,
   })
   const viewRef   = useRef({ zoom: 1, panX: 0, panY: 0 })
   const dragRef   = useRef({ on: false, sx: 0, sy: 0, lx: 0, ly: 0, moved: false })
@@ -67,7 +67,6 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
     if (cache.lastW === w && cache.lastH === h && cache.lastDpr === dpr && cache.base) return
     cache.lastW = w; cache.lastH = h; cache.lastDpr = dpr
 
-    const pw = Math.round(w * dpr), ph = Math.round(h * dpr)
     const { cols, rows, countries } = world
 
     // Pre-parse paths once
@@ -77,53 +76,8 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
       }))
     }
 
-    // ── Base map at physical resolution ────────────────────────────────
-    const base = document.createElement('canvas')
-    base.width = pw; base.height = ph
-    const bx = base.getContext('2d')
-
-    // Ocean radial gradient
-    const cx = pw / 2, cy = ph * 0.45
-    const grad = bx.createRadialGradient(cx, cy, 0, cx, cy, pw * 0.7)
-    grad.addColorStop(0, OCEAN_SHALLOW)
-    grad.addColorStop(0.5, OCEAN_MID)
-    grad.addColorStop(1, OCEAN_DEEP)
-    bx.fillStyle = grad
-    bx.fillRect(0, 0, pw, ph)
-
-    // Subtle ocean wave lines
-    bx.strokeStyle = 'rgba(15,40,80,0.2)'
-    bx.lineWidth = 0.5 * dpr
-    for (let y = 0; y < ph; y += 30 * dpr) {
-      bx.beginPath()
-      for (let x = 0; x < pw; x += 4) {
-        const wave = Math.sin(x * 0.008 + y * 0.003) * 3 * dpr
-        x === 0 ? bx.moveTo(x, y + wave) : bx.lineTo(x, y + wave)
-      }
-      bx.stroke()
-    }
-
-    // Land fills per continent
-    for (const p of cache.parsedPaths) {
-      const pal = CONTINENT_COLORS[p.continent] || DEFAULT_CONT
-      bx.beginPath()
-      traceCountry(bx, p.rings, cols, rows, pw, ph)
-      bx.fillStyle = pal.base
-      bx.fill()
-    }
-
-    // Borders with glow
-    bx.strokeStyle = BORDER_COLOR
-    bx.lineWidth = 0.7 * dpr
-    bx.shadowColor = 'rgba(60,140,220,0.25)'
-    bx.shadowBlur = 3 * dpr
-    for (const p of cache.parsedPaths) {
-      bx.beginPath()
-      traceCountry(bx, p.rings, cols, rows, pw, ph)
-      bx.stroke()
-    }
-    bx.shadowBlur = 0
-    cache.base = base
+    // Build base at current zoom tier
+    rebuildBase(w, h, dpr, world, 1)
 
     // ── Clip mask (CSS resolution, white = land) ──────────────────────
     const clip = document.createElement('canvas')
@@ -156,6 +110,68 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
     for (let i = 0; i < w * h; i++) hitArr[i] = img[i * 4] + (img[i * 4 + 1] << 8)
     cache.hitData = hitArr; cache.hitW = w; cache.hitH = h
   }, [])
+
+  // ── Rebuild base map at a specific scale tier ───────────────────────
+  function rebuildBase(w, h, dpr, world, tier) {
+    const cache = cacheRef.current
+    const { cols, rows } = world
+    const scale = tier
+    const pw = Math.round(w * dpr * scale), ph = Math.round(h * dpr * scale)
+
+    // Cap at 4096px to avoid memory issues
+    const maxDim = 4096
+    const actualW = Math.min(pw, maxDim)
+    const actualH = Math.min(ph, maxDim)
+
+    const base = document.createElement('canvas')
+    base.width = actualW; base.height = actualH
+    const bx = base.getContext('2d')
+
+    // Ocean radial gradient
+    const cx = actualW / 2, cy = actualH * 0.45
+    const grad = bx.createRadialGradient(cx, cy, 0, cx, cy, actualW * 0.7)
+    grad.addColorStop(0, OCEAN_SHALLOW)
+    grad.addColorStop(0.5, OCEAN_MID)
+    grad.addColorStop(1, OCEAN_DEEP)
+    bx.fillStyle = grad
+    bx.fillRect(0, 0, actualW, actualH)
+
+    // Subtle ocean wave lines
+    bx.strokeStyle = 'rgba(15,40,80,0.2)'
+    bx.lineWidth = 0.5 * dpr * scale
+    for (let y = 0; y < actualH; y += 30 * dpr * scale) {
+      bx.beginPath()
+      for (let x = 0; x < actualW; x += 4) {
+        const wave = Math.sin(x * 0.008 / scale + y * 0.003 / scale) * 3 * dpr * scale
+        x === 0 ? bx.moveTo(x, y + wave) : bx.lineTo(x, y + wave)
+      }
+      bx.stroke()
+    }
+
+    // Land fills per continent
+    for (const p of cache.parsedPaths) {
+      const pal = CONTINENT_COLORS[p.continent] || DEFAULT_CONT
+      bx.beginPath()
+      traceCountry(bx, p.rings, cols, rows, actualW, actualH)
+      bx.fillStyle = pal.base
+      bx.fill()
+    }
+
+    // Borders with glow
+    bx.strokeStyle = BORDER_COLOR
+    bx.lineWidth = 0.7 * dpr * scale
+    bx.shadowColor = 'rgba(60,140,220,0.25)'
+    bx.shadowBlur = 3 * dpr * scale
+    for (const p of cache.parsedPaths) {
+      bx.beginPath()
+      traceCountry(bx, p.rings, cols, rows, actualW, actualH)
+      bx.stroke()
+    }
+    bx.shadowBlur = 0
+
+    cache.base = base
+    cache.baseTier = tier
+  }
 
   // ── Init ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -293,11 +309,22 @@ export default function PixelMap({ pixels, onPurchaseIntent, highlightedPixelId 
       ctx.fillStyle = OCEAN_DEEP
       ctx.fillRect(0, 0, w, h)
 
-      // Base map
+      // Re-render base at higher res if zoom tier changed (debounced)
+      const neededTier = zoom <= 1.5 ? 1 : zoom <= 3 ? 2 : zoom <= 6 ? 3 : 4
+      if (cache.baseTier !== neededTier && worldRef.current && !cache.rebuildPending) {
+        cache.rebuildPending = true
+        setTimeout(() => {
+          rebuildBase(w, h, dpr, worldRef.current, neededTier)
+          cache.rebuildPending = false
+          draw()  // re-render with new base
+        }, 150)
+      }
+
+      // Base map — higher tier = more pixels = sharper at zoom
       ctx.save()
       ctx.translate(panX, panY)
       ctx.scale(zoom, zoom)
-      ctx.imageSmoothingEnabled = zoom < 2.5
+      ctx.imageSmoothingEnabled = true
       ctx.drawImage(cache.base, 0, 0, w, h)
       ctx.restore()
 
